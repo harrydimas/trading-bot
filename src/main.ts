@@ -3,6 +3,7 @@ import { CONFIG } from "./config";
 import { startOB } from "./services/orderbookWS";
 import { startUserWS } from "./services/ws";
 import { initDB } from "./db/init";
+import { initPriceCache } from "./strategies/aiFilter";
 import { logger } from "./utils/logger/logger";
 import { sendTelegramError, sendTelegramMessage } from "./services/telegram";
 import { healthState } from "./services/health";
@@ -26,6 +27,12 @@ async function main() {
     logger.error({ error }, "Failed to initialize database");
     sendTelegramError("DB INIT", error);
     throw error;
+  }
+
+  // Initialize AIFilter price cache from historical data
+  logger.info("Initializing price caches...");
+  for (const b of bots) {
+    await initPriceCache(b.symbol);
   }
 
   CONFIG.SYMBOLS.forEach((symbol: string) => startOB(symbol));

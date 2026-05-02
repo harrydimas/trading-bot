@@ -1,5 +1,6 @@
 import { getOB } from "../services/orderbookWS";
 import { createChildLogger } from "../utils/logger/logger";
+import { exchange } from "../exchange/client";
 
 const logger = createChildLogger("AIFilter");
 
@@ -12,9 +13,52 @@ interface PriceSnapshot {
 const snap15m: Record<string, PriceSnapshot> = {};
 const snap1h: Record<string, PriceSnapshot> = {};
 
-// Interval tracker
-let last15mInterval = -1;
-let last1hInterval = -1;
+// Interval tracker per symbol untuk mendukung multi-symbol
+const last15mInterval: Record<string, number> = {};
+const last1hInterval: Record<string, number> = {};
+
+// Track current tick price for snapshotting
+const currentTickPrice: Record<string, number> = {};
+
+/**
+ * Inisialisasi cache harga menggunakan data historis (Klines)
+ * Mencegah bot "buta" di jam pertama setelah restart.
+ */
+export async function initPriceCache(symbol: string) {
+  try {
+    logger.info({ symbol }, "Initializing price cache with historical data...");
+
+    const now = new Date();
+    const current15m = Math.floor((now.getHours() * 60 + now.getMinutes()) / 15);
+    const current1h = now.getHours();
+
+    // Fetch 1h klines (ambil 2 terakhir: current dan previous)
+    const k1h = await exchange.fetchOHLCV(symbol, "1h", undefined, 2);
+    if (k1h && k1h.length >= 2) {
+      const prev1h = k1h[k1h.length - 2]; // [timestamp, open, high, low, close, volume]
+      const prevHour = new Date(prev1h[0]).getHours();
+      snap1h[symbol] = { price: prev1h[4], interval: prevHour };
+      logger.info({ symbol, price: prev1h[4], hour: prevHour }, "1h cache initialized from previous candle close");
+    }
+
+    // Fetch 15m klines
+    const k15m = await exchange.fetchOHLCV(symbol, "15m", undefined, 2);
+    if (k15m && k15m.length >= 2) {
+      const prev15m = k15m[k15m.length - 2];
+      const prev15mDate = new Date(prev15m[0]);
+      const prev15mInterval = Math.floor((prev15mDate.getHours() * 60 + prev15mDate.getMinutes()) / 15);
+      snap15m[symbol] = { price: prev15m[4], interval: prev15mInterval };
+      logger.info({ symbol, price: prev15m[4], interval: prev15mInterval }, "15m cache initialized from previous candle close");
+    }
+
+    // Set tracker ke interval saat ini agar tidak double snapshot di tick pertama
+    last15mInterval[symbol] = current15m;
+    last1hInterval[symbol] = current1h;
+
+  } catch (error) {
+    logger.error({ symbol, error }, "Failed to initialize price cache");
+  }
+}
 
 // Dipanggil setiap tick — update cache harga per timeframe
 export function updatePriceCache(symbol: string, price: number) {
@@ -24,19 +68,30 @@ export function updatePriceCache(symbol: string, price: number) {
   const current15m = Math.floor(minuteOfDay / 15);
   const current1h = now.getHours();
 
-  // Snapshot harga di awal interval baru
-  // Simpan interval SEBELUMNYA, bukan interval saat ini
-  if (current15m !== last15mInterval) {
-    snap15m[symbol] = { price, interval: last15mInterval };
-    last15mInterval = current15m;
-    logger.debug({ symbol, price, interval: current15m }, "15m price updated");
+  // Initialize trackers for new symbols (fallback jika initPriceCache belum dipanggil)
+  if (last15mInterval[symbol] === undefined) {
+    last15mInterval[symbol] = current15m;
+    last1hInterval[symbol] = current1h;
+    currentTickPrice[symbol] = price;
+    return;
   }
 
-  if (current1h !== last1hInterval) {
-    snap1h[symbol] = { price, interval: last1hInterval };
-    last1hInterval = current1h;
-    logger.debug({ symbol, price, hour: current1h }, "1h price updated");
+  // Snapshot harga dari interval lama saat interval baru dimulai
+  // Simpan price dari tick TERAKHIR interval sebelumnya (currentTickPrice sebelum update)
+  if (current15m !== last15mInterval[symbol]) {
+    snap15m[symbol] = { price: currentTickPrice[symbol], interval: last15mInterval[symbol] };
+    logger.debug({ symbol, price: currentTickPrice[symbol], interval: last15mInterval[symbol] }, "15m price snapshot updated (previous close)");
+    last15mInterval[symbol] = current15m;
   }
+
+  if (current1h !== last1hInterval[symbol]) {
+    snap1h[symbol] = { price: currentTickPrice[symbol], interval: last1hInterval[symbol] };
+    logger.debug({ symbol, price: currentTickPrice[symbol], hour: last1hInterval[symbol] }, "1h price snapshot updated (previous close)");
+    last1hInterval[symbol] = current1h;
+  }
+
+  // Update current tick price AFTER checking for interval change to preserve previous close
+  currentTickPrice[symbol] = price;
 }
 
 export function shouldEnter(symbol: string, price: number): boolean {
@@ -64,7 +119,8 @@ export function shouldEnter(symbol: string, price: number): boolean {
 
   logger.debug({
     symbol, price,
-    p15m: s15m.price, p1h: s1h.price,
+    p15m: s15m.price, i15m: s15m.interval,
+    p1h: s1h.price, i1h: s1h.interval,
     above15m, above1h,
     ratio: ratio.toFixed(2),
     obStrong,
