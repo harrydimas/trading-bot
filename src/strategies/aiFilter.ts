@@ -117,7 +117,7 @@ export function shouldEnter(symbol: string, price: number): boolean {
 
   const enter = above15m && above1h && obStrong;
 
-  logger.debug({
+  logger.info({
     symbol, price,
     p15m: s15m.price, i15m: s15m.interval,
     p1h: s1h.price, i1h: s1h.interval,

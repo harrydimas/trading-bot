@@ -123,7 +123,7 @@ async function main() {
     const loopDuration = Date.now() - loopStart;
     
     if (tickCount % 5 === 0) {
-      logger.info({ 
+      logger.debug({ 
         tickCount, 
         loopDuration: `${loopDuration}ms`,
         interval: `${CONFIG.CHECK_INTERVAL}ms`,
