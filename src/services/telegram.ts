@@ -5,7 +5,7 @@ import { healthState } from "./health";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
-const CHATS_FILE = join(import.meta.dir, "../../telegram-chats.json");
+const CHATS_FILE = join(import.meta.dir, "../../data/telegram-chats.json");
 
 let chatIds: number[] = [];
 let bot: Telegraf | null = null;

@@ -18,8 +18,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # dotenv environment variable files
 .env
 
-# Telegram persisted chat IDs
-telegram-chats.json
+# Data files (telegram chats, etc.)
+data/*.json
 .env.development.local
 .env.test.local
 .env.production.local

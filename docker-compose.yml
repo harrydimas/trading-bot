@@ -16,6 +16,8 @@ services:
       - .env
     ports:
       - "3000:3000"
+    volumes:
+      - bot-data:/app/data
     depends_on:
       - db
     healthcheck:
@@ -24,3 +26,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+volumes:
+  bot-data:
