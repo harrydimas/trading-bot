@@ -1,5 +1,6 @@
 import { getOB } from "./orderbookWS";
 import { createChildLogger } from "../utils/logger/logger";
+import { sendTelegramMessage } from "./telegram";
 
 const logger = createChildLogger("Slippage");
 
@@ -15,7 +16,7 @@ export function checkSlippage(symbol: string, price: number) {
   const threshold = 0.002;
   const passed = diff < threshold;
 
-  logger.debug({ 
+  logger.info({ 
     symbol, 
     price, 
     estAsk, 
@@ -23,6 +24,13 @@ export function checkSlippage(symbol: string, price: number) {
     threshold: (threshold * 100).toFixed(2) + "%",
     passed 
   }, "Slippage check");
+
+  sendTelegramMessage(
+    `${passed ? "✅" : "⚠️"} <b>SLIPPAGE CHECK</b> ${symbol}\n` +
+    `Status: <code>${passed ? "PASS" : "FAIL"}</code>\n` +
+    `Price: <code>${price}</code> | Est Ask: <code>${estAsk}</code>\n` +
+    `Diff: <code>${(diff * 100).toFixed(2)}%</code> (threshold: <code>${(threshold * 100).toFixed(2)}%</code>)`
+  );
 
   return passed;
 }

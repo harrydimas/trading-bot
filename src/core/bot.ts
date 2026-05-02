@@ -427,12 +427,6 @@ export class Bot {
         }, "15-minute check - evaluating entry conditions");
 
         if (shouldEnter(this.symbol, price)) {
-          sendTelegramMessage(
-            `📈 <b>ENTRY SIGNAL</b>\n` +
-            `Symbol: <code>${this.symbol}</code>\n` +
-            `Price: <code>${price}</code>\n` +
-            `Interval: <code>${currentInterval}</code>`
-          );
           await this.buy(price);
         } else {
           this.logger.info("Entry conditions not met - no trade this interval");

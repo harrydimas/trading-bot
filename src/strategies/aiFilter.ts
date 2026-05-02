@@ -1,6 +1,7 @@
 import { getOB } from "../services/orderbookWS";
 import { createChildLogger } from "../utils/logger/logger";
 import { exchange } from "../exchange/client";
+import { sendTelegramMessage } from "../services/telegram";
 
 const logger = createChildLogger("AIFilter");
 
@@ -126,6 +127,15 @@ export function shouldEnter(symbol: string, price: number): boolean {
     obStrong,
     enter,
   }, "Entry condition check");
+
+  sendTelegramMessage(
+    `${enter ? "📈" : "⏸️"} <b>ENTRY CHECK</b> ${symbol}\n` +
+    `Decision: <code>${enter ? "ENTER ✅" : "HOLD"}</code>\n` +
+    `Price: <code>${price}</code> | Ratio: <code>${ratio.toFixed(2)}</code>\n` +
+    `15m:  <code>${above15m ? "✅" : "❌"}</code> price > prev <code>${s15m.price}</code> (int: ${s15m.interval})\n` +
+    `1h:   <code>${above1h ? "✅" : "❌"}</code> price > prev <code>${s1h.price}</code> (int: ${s1h.interval})\n` +
+    `OB:   <code>${obStrong ? "✅" : "❌"}</code> ratio <code>${ratio.toFixed(2)}</code> > 1.2`
+  );
 
   return enter;
 }
