@@ -61,10 +61,23 @@ export async function sendTelegramMessage(text: string) {
 }
 
 /**
+ * Escape HTML entities to prevent Telegram parse errors
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
  * Send a formatted error alert to Telegram
+ * Error messages are HTML-escaped to prevent Telegram parse errors
  */
 export async function sendTelegramError(context: string, error: any) {
-  const errorMessage = error?.message || String(error);
+  const errorMessage = escapeHtml(error?.message || String(error));
   const message = `🚨 <b>ERROR</b> [${context}]\n\n${errorMessage}`;
   await sendTelegramMessage(message);
 }
