@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { createChildLogger } from "../utils/logger/logger";
 import { sendTelegramError } from "./telegram";
+import { healthState } from "./health";
 
 const ob: any = {};
 const midPrice: Record<string, number> = {};
@@ -15,6 +16,8 @@ export function startOB(symbol: string) {
 
   ws.on("open", () => {
     logger.info({ symbol }, "Orderbook WebSocket opened");
+    healthState.orderbookWsConnected = true;
+    healthState.wsConnected = healthState.orderbookWsConnected && healthState.userWsConnected;
   });
 
   let messageCount = 0;
@@ -26,12 +29,13 @@ export function startOB(symbol: string) {
 
     for (const b of d.b.slice(0, 10)) bids += parseFloat(b[1]);
     for (const a of d.a.slice(0, 10)) asks += parseFloat(a[1]);
-
-    ob[symbol] = { bids, asks };
     
-    // Hitung mid price dari best bid & best ask
     const bestBid = parseFloat(d.b[0]?.[0] || "0");
     const bestAsk = parseFloat(d.a[0]?.[0] || "0");
+
+    ob[symbol] = { bids, asks, bestAsk, bestBid };
+    
+    // Hitung mid price dari best bid & best ask
     if (bestBid > 0 && bestAsk > 0) {
       midPrice[symbol] = (bestBid + bestAsk) / 2;
     }
@@ -49,6 +53,8 @@ export function startOB(symbol: string) {
 
   ws.on("close", () => {
     logger.warn({ symbol }, "Orderbook WebSocket closed, reconnecting...");
+    healthState.orderbookWsConnected = false;
+    healthState.wsConnected = false;
     sendTelegramError(`ORDERBOOK WS CLOSED [${symbol}]`, new Error(`Orderbook WebSocket disconnected`));
     setTimeout(() => startOB(symbol), 5000);
   });

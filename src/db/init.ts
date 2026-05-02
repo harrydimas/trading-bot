@@ -4,9 +4,24 @@ import { sendTelegramError } from "../services/telegram";
 
 const logger = createChildLogger("DatabaseInit");
 
+async function waitForDB(maxRetries = 10): Promise<void> {
+  for (let i = 1; i <= maxRetries; i++) {
+    try {
+      await pool.query("SELECT 1");
+      return;
+    } catch (error) {
+      if (i === maxRetries) throw error;
+      const delay = Math.min(1000 * 2 ** (i - 1), 10000);
+      logger.warn({ attempt: i, maxRetries, delay }, "DB not ready, waiting...");
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
 export async function initDB() {
   try {
-    logger.info("Initializing database schema");
+    await waitForDB();
+    logger.info("Database connection established, initializing schema...");
     
     // Create tables if they don't exist
     await pool.query(`

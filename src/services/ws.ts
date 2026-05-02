@@ -3,6 +3,7 @@ import { CONFIG } from "../config";
 import * as crypto from "crypto";
 import { createChildLogger } from "../utils/logger/logger";
 import { sendTelegramError } from "./telegram";
+import { healthState } from "./health";
 
 const logger = createChildLogger("UserWS");
 
@@ -13,6 +14,8 @@ export async function startUserWS(onMsg: any) {
 
   ws.on("open", () => {
     logger.info("User WebSocket opened");
+    healthState.userWsConnected = true;
+    healthState.wsConnected = healthState.orderbookWsConnected && healthState.userWsConnected;
     const timestamp = Date.now();
     const payload = `apiKey=${CONFIG.API_KEY}&timestamp=${timestamp}`;
 
@@ -60,14 +63,29 @@ export async function startUserWS(onMsg: any) {
     }
   });
 
+  // Periodic keep-alive: send ping frame every 3 minutes
+  // Binance WebSocket API v3 closes idle connections after ~10 min
+  const keepAlive = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+      logger.debug("Sent keep-alive ping");
+    }
+  }, 180_000);
+
   ws.on("close", () => {
+    clearInterval(keepAlive);
     logger.warn("User WebSocket closed, reconnecting in 5s...");
+    healthState.userWsConnected = false;
+    healthState.wsConnected = false;
     sendTelegramError("USER WS CLOSED", new Error("User WebSocket closed unexpectedly"));
     setTimeout(() => startUserWS(onMsg), 5000);
   });
 
   ws.on("error", (err) => {
+    clearInterval(keepAlive);
     logger.error({ error: err }, "User WebSocket error");
+    healthState.userWsConnected = false;
+    healthState.wsConnected = false;
     sendTelegramError("USER WS ERROR", err);
     ws.close();
   });

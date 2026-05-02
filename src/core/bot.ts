@@ -1,4 +1,4 @@
-import { exchange, getUSDTBalance } from "../exchange/client";
+import { exchange, getUSDTBalance, fetchPrice } from "../exchange/client";
 import { shouldEnter, updatePriceCache } from "../strategies/aiFilter";
 import { getMidPrice } from "../services/orderbookWS";
 import { checkSlippage } from "../services/slippage";
@@ -26,7 +26,7 @@ function isAboveMinOrder(amount: number, price: number): boolean {
 }
 
 function roundAmount(n: number): number {
-  return Math.round(n * 1e8) / 1e8;
+  return Math.ceil(n * 1e8) / 1e8;
 }
 
 export class Bot {
@@ -103,19 +103,36 @@ export class Bot {
       return;
    }
 
-    const amount = CONFIG.BUY_USDT / price;
+    const amount = roundAmount(CONFIG.BUY_USDT / price);
+
+    if (!isAboveMinOrder(amount, price)) {
+      this.logger.warn(
+        { amount, price, notional: amount * price, min: CONFIG.MIN_ORDER_USDT },
+        "Buy order below minimum notional, skipping"
+      );
+      return;
+    }
+
     this.logger.info({ price, amount, exposure: currentExposure }, "Executing buy order");
 
     try {
-      const order = await exchange.createMarketBuyOrder(this.symbol, amount);
-      this.logger.info({ orderId: order.id, price, amount }, "Buy order executed");
+      const order = await exchange.createOrder(
+        this.symbol,
+        "market",
+        "buy",
+        amount,
+        undefined,
+        { quoteOrderQty: CONFIG.BUY_USDT }
+      );
+      const filledAmount = (order.filled as number) || amount;
+      this.logger.info({ orderId: order.id, price, amount: filledAmount }, "Buy order executed");
 
       sendTelegramMessage(
         `✅ <b>BUY ORDER EXECUTED</b>\n` +
         `Symbol: <code>${this.symbol}</code>\n` +
         `Price: <code>${price}</code>\n` +
-        `Amount: <code>${amount.toFixed(6)}</code>\n` +
-        `Value: <code>${(price * amount).toFixed(2)} USDT</code>\n` +
+        `Amount: <code>${filledAmount.toFixed(6)}</code>\n` +
+        `Value: <code>${(price * filledAmount).toFixed(2)} USDT</code>\n` +
         `Positions: <code>${this.pos.length + 1}/${CONFIG.MAX_POSITIONS}</code>`
       );
 
@@ -123,13 +140,13 @@ export class Bot {
         symbol: this.symbol,
         side: "buy",
         price,
-        amount,
+        amount: filledAmount,
         orderId: order.id,
       });
 
       const newPos: Position = {
         buy_price: price,
-        amount,
+        amount: filledAmount,
         created_at: Date.now(),
         highest_price: price,
         trailing_pct: CONFIG.TRAILING_DEFAULT,
@@ -151,7 +168,7 @@ export class Bot {
         `✅ <b>POSITION OPENED</b>\n` +
         `Symbol: <code>${this.symbol}</code>\n` +
         `Entry: <code>${price}</code>\n` +
-        `Amount: <code>${amount.toFixed(6)}</code>`
+        `Amount: <code>${filledAmount.toFixed(6)}</code>`
       );
     } catch (error) {
       this.logger.error({ error, price, amount }, "Failed to execute buy order");
@@ -362,8 +379,24 @@ export class Bot {
     this.isTicking = true;
 
     try {
-      const t = await exchange.fetchTicker(this.symbol);
-      const price = t.last as number || 0;
+      // ── Price sourcing: WS mid-price first, fast REST fallback ──
+      const wsPrice = getMidPrice(this.symbol);
+      let price: number;
+      let priceSource: string;
+
+      if (wsPrice) {
+        price = wsPrice;
+        priceSource = "ws";
+      } else {
+        const restPrice = await fetchPrice(this.symbol, 8000);
+        if (restPrice) {
+          price = restPrice;
+          priceSource = "rest";
+        } else {
+          this.logger.warn("No price from WS or REST, skipping tick");
+          return;
+        }
+      }
 
       const now = new Date();
       const currentInterval = Math.floor((now.getHours() * 60 + now.getMinutes()) / 15);
@@ -371,26 +404,21 @@ export class Bot {
       this.logger.debug({
         symbol: this.symbol,
         price,
+        priceSource,
         currentInterval,
         lastInterval: this.lastInterval,
         positions: this.pos.length,
         exposure: this.getExposure()
       }, "Tick update");
 
+      // Update trailing always from WS (real-time mid) if available
+      const trailingPrice = getMidPrice(this.symbol) || price;
+      if (this.pos.length > 0) {
+        this.updateTrailing(trailingPrice);
+      }
+
       // Update price cache untuk multi-timeframe entry filter
       updatePriceCache(this.symbol, price);
-
-      // Update trailing dari WS real-time mid price jika ada posisi
-      const wsPrice = getMidPrice(this.symbol);
-      if (this.pos.length > 0) {
-        if (wsPrice) {
-          this.updateTrailing(wsPrice);
-        } else {
-          // WS belum connect — fallback ke ticker price
-          this.logger.warn({ symbol: this.symbol }, "WS mid price unavailable, using ticker price for trailing");
-          this.updateTrailing(price); // price sudah ada dari fetchTicker di atas
-        }
-      }
 
       if (currentInterval !== this.lastInterval) {
         this.logger.info({
