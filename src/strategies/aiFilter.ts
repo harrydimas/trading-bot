@@ -21,6 +21,10 @@ const last1hInterval: Record<string, number> = {};
 // Track current tick price for snapshotting
 const currentTickPrice: Record<string, number> = {};
 
+// Telegram throttle - prevent rate limit
+const lastTelegramSent: Record<string, number> = {};
+const lastDecision: Record<string, boolean> = {};
+
 /**
  * Inisialisasi cache harga menggunakan data historis (Klines)
  * Mencegah bot "buta" di jam pertama setelah restart.
@@ -29,25 +33,24 @@ export async function initPriceCache(symbol: string) {
   try {
     logger.info({ symbol }, "Initializing price cache with historical data...");
 
-    const now = new Date();
-    const current15m = Math.floor((now.getHours() * 60 + now.getMinutes()) / 15);
-    const current1h = now.getHours();
+    // Use epoch-based intervals (always UTC, never resets at midnight)
+    const current15m = Math.floor(Date.now() / (15 * 60 * 1000));
+    const current1h  = Math.floor(Date.now() / (60 * 60 * 1000));
 
     // Fetch 1h klines (ambil 2 terakhir: current dan previous)
     const k1h = await exchange.fetchOHLCV(symbol, "1h", undefined, 2);
     if (k1h && k1h.length >= 2) {
       const prev1h = k1h[k1h.length - 2]; // [timestamp, open, high, low, close, volume]
-      const prevHour = new Date(prev1h[0]).getHours();
-      snap1h[symbol] = { price: prev1h[4], interval: prevHour };
-      logger.info({ symbol, price: prev1h[4], hour: prevHour }, "1h cache initialized from previous candle close");
+      const prevHourInterval = Math.floor(prev1h[0] / 1000 / (60 * 60));
+      snap1h[symbol] = { price: prev1h[4], interval: prevHourInterval };
+      logger.info({ symbol, price: prev1h[4], interval: prevHourInterval }, "1h cache initialized from previous candle close");
     }
 
     // Fetch 15m klines
     const k15m = await exchange.fetchOHLCV(symbol, "15m", undefined, 2);
     if (k15m && k15m.length >= 2) {
       const prev15m = k15m[k15m.length - 2];
-      const prev15mDate = new Date(prev15m[0]);
-      const prev15mInterval = Math.floor((prev15mDate.getHours() * 60 + prev15mDate.getMinutes()) / 15);
+      const prev15mInterval = Math.floor(prev15m[0] / 1000 / (15 * 60));
       snap15m[symbol] = { price: prev15m[4], interval: prev15mInterval };
       logger.info({ symbol, price: prev15m[4], interval: prev15mInterval }, "15m cache initialized from previous candle close");
     }
@@ -56,6 +59,13 @@ export async function initPriceCache(symbol: string) {
     last15mInterval[symbol] = current15m;
     last1hInterval[symbol] = current1h;
 
+    // Seed currentTickPrice from the current (live) candle close
+    const latestK1h = k1h?.[k1h.length - 1];
+    if (latestK1h) {
+      currentTickPrice[symbol] = latestK1h[4];
+      logger.info({ symbol, price: latestK1h[4] }, "currentTickPrice seeded from live candle");
+    }
+
   } catch (error) {
     logger.error({ symbol, error }, "Failed to initialize price cache");
   }
@@ -63,11 +73,9 @@ export async function initPriceCache(symbol: string) {
 
 // Dipanggil setiap tick — update cache harga per timeframe
 export function updatePriceCache(symbol: string, price: number) {
-  const now = new Date();
-  const minuteOfDay = now.getHours() * 60 + now.getMinutes();
-
-  const current15m = Math.floor(minuteOfDay / 15);
-  const current1h = now.getHours();
+  // Use epoch-based intervals (always UTC, never resets at midnight)
+  const current15m = Math.floor(Date.now() / (15 * 60 * 1000));
+  const current1h  = Math.floor(Date.now() / (60 * 60 * 1000));
 
   // Initialize trackers for new symbols (fallback jika initPriceCache belum dipanggil)
   if (last15mInterval[symbol] === undefined) {
@@ -79,15 +87,18 @@ export function updatePriceCache(symbol: string, price: number) {
 
   // Snapshot harga dari interval lama saat interval baru dimulai
   // Simpan price dari tick TERAKHIR interval sebelumnya (currentTickPrice sebelum update)
+  // Guard against undefined price — fallback to current tick price
   if (current15m !== last15mInterval[symbol]) {
-    snap15m[symbol] = { price: currentTickPrice[symbol], interval: last15mInterval[symbol] };
-    logger.debug({ symbol, price: currentTickPrice[symbol], interval: last15mInterval[symbol] }, "15m price snapshot updated (previous close)");
+    const prevPrice = currentTickPrice[symbol] ?? price;
+    snap15m[symbol] = { price: prevPrice, interval: last15mInterval[symbol] };
+    logger.debug({ symbol, price: prevPrice, interval: last15mInterval[symbol] }, "15m price snapshot updated (previous close)");
     last15mInterval[symbol] = current15m;
   }
 
   if (current1h !== last1hInterval[symbol]) {
-    snap1h[symbol] = { price: currentTickPrice[symbol], interval: last1hInterval[symbol] };
-    logger.debug({ symbol, price: currentTickPrice[symbol], hour: last1hInterval[symbol] }, "1h price snapshot updated (previous close)");
+    const prevPrice = currentTickPrice[symbol] ?? price;
+    snap1h[symbol] = { price: prevPrice, interval: last1hInterval[symbol] };
+    logger.debug({ symbol, price: prevPrice, hour: last1hInterval[symbol] }, "1h price snapshot updated (previous close)");
     last1hInterval[symbol] = current1h;
   }
 
@@ -111,12 +122,19 @@ export function shouldEnter(symbol: string, price: number): boolean {
     return false;
   }
 
-  const ratio = ob.bids / (ob.asks || 1);
+  // Safe orderbook ratio calculation (avoid division by zero)
+  const ratio = (ob.asks > 0 && ob.bids > 0) ? ob.bids / ob.asks : 0;
+
   const above15m = price > s15m.price;  // konfirmasi momentum 15 menit
   const above1h = price > s1h.price;    // konfirmasi tren 1 jam
   const obStrong = ratio > 1.2;         // orderbook masih condong bids
 
-  const enter = above15m && above1h && obStrong;
+  // Volatility filter — avoid entry in flat/sideways market
+  const change15m = Math.abs(price - s15m.price) / s15m.price;
+  const change1h  = Math.abs(price - s1h.price) / s1h.price;
+  const hasVolatility = change15m > 0.002 && change1h > 0.001; // 0.2% and 0.1%
+
+  const enter = above15m && above1h && obStrong && hasVolatility;
 
   logger.info({
     symbol, price,
@@ -125,17 +143,40 @@ export function shouldEnter(symbol: string, price: number): boolean {
     above15m, above1h,
     ratio: ratio.toFixed(2),
     obStrong,
+    change15m: change15m.toFixed(4),
+    change1h: change1h.toFixed(4),
+    hasVolatility,
     enter,
   }, "Entry condition check");
 
-  sendTelegramMessage(
-    `${enter ? "📈" : "⏸️"} <b>ENTRY CHECK</b> ${symbol}\n` +
-    `Decision: <code>${enter ? "ENTER ✅" : "HOLD"}</code>\n` +
-    `Price: <code>${price}</code> | Ratio: <code>${ratio.toFixed(2)}</code>\n` +
-    `15m:  <code>${above15m ? "✅" : "❌"}</code> price > prev <code>${s15m.price}</code> (int: ${s15m.interval})\n` +
-    `1h:   <code>${above1h ? "✅" : "❌"}</code> price > prev <code>${s1h.price}</code> (int: ${s1h.interval})\n` +
-    `OB:   <code>${obStrong ? "✅" : "❌"}</code> ratio <code>${ratio.toFixed(2)}</code> > 1.2`
-  );
+  // Telegram throttle — only notify on decision change or after 60s of same decision
+  const decisionChanged = lastDecision[symbol] !== enter;
+  const throttleMs = 60_000;
+  const now = Date.now();
+  const elapsed = now - (lastTelegramSent[symbol] ?? 0);
+
+  if (decisionChanged || elapsed > throttleMs) {
+    sendTelegramMessage(
+      `${enter ? "📈" : "⏸️"} <b>ENTRY CHECK</b> ${symbol}\n` +
+      `Decision: <code>${enter ? "ENTER ✅" : "HOLD"}</code>\n` +
+      `Price: <code>${price}</code> | Ratio: <code>${ratio.toFixed(2)}</code>\n` +
+      `15m:  <code>${above15m ? "✅" : "❌"}</code> price > prev <code>${s15m.price}</code> (int: ${s15m.interval})\n` +
+      `1h:   <code>${above1h ? "✅" : "❌"}</code> price > prev <code>${s1h.price}</code> (int: ${s1h.interval})\n` +
+      `OB:   <code>${obStrong ? "✅" : "❌"}</code> ratio <code>${ratio.toFixed(2)}</code> > 1.2\n` +
+      `Vol:  <code>${hasVolatility ? "✅" : "❌"}</code> 15m: ${(change15m * 100).toFixed(2)}% 1h: ${(change1h * 100).toFixed(2)}%`
+    );
+    lastTelegramSent[symbol] = now;
+    lastDecision[symbol] = enter;
+  }
 
   return enter;
+}
+
+/**
+ * Wrapper that enforces call order: updatePriceCache before shouldEnter.
+ * Callers should use this instead of calling both functions separately.
+ */
+export function processTick(symbol: string, price: number): boolean {
+  updatePriceCache(symbol, price);
+  return shouldEnter(symbol, price);
 }
