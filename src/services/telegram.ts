@@ -2,34 +2,87 @@ import { Telegraf } from "telegraf";
 import { CONFIG } from "../config";
 import { createChildLogger } from "../utils/logger/logger";
 import { healthState } from "./health";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 
-let chatId: number | null = null;
+const CHATS_FILE = join(import.meta.dir, "../../data/telegram-chats.json");
+
+let chatIds: number[] = [];
 let bot: Telegraf | null = null;
 
 const logger = createChildLogger("Telegram");
 
+/**
+ * Load chat IDs from JSON file on disk.
+ */
+function loadChatIds(): number[] {
+  try {
+    if (existsSync(CHATS_FILE)) {
+      const data = readFileSync(CHATS_FILE, "utf-8");
+      const ids = JSON.parse(data);
+      if (Array.isArray(ids) && ids.every((id: unknown) => typeof id === "number")) {
+        logger.info({ chatIds: ids }, "Loaded Telegram chat IDs from file");
+        return ids;
+      }
+      logger.warn({ data: ids }, "telegram-chats.json has invalid format, expected number[]");
+    }
+  } catch (error) {
+    logger.error({ error }, "Failed to load Telegram chat IDs from file");
+  }
+  return [];
+}
+
+/**
+ * Save chat IDs to JSON file on disk.
+ */
+function saveChatIds(ids: number[]): void {
+  try {
+    writeFileSync(CHATS_FILE, JSON.stringify(ids, null, 2), "utf-8");
+    logger.debug({ chatIds: ids }, "Saved Telegram chat IDs to file");
+  } catch (error) {
+    logger.error({ error }, "Failed to save Telegram chat IDs to file");
+  }
+}
+
+// Load persisted chat IDs on startup
+chatIds = loadChatIds();
+
 if (CONFIG.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(CONFIG.TELEGRAM_BOT_TOKEN);
-  
+
   bot.start((ctx) => {
-    chatId = ctx.chat.id;
-    logger.info({ chatId, user: ctx.from }, "Telegram chat ID saved from /start command");
-    
+    const id = ctx.chat.id;
+    if (!chatIds.includes(id)) {
+      chatIds.push(id);
+      saveChatIds(chatIds);
+      logger.info({ chatId: id, user: ctx.from }, "Telegram chat ID saved from /start command");
+    }
+
     ctx.reply(
       "✅ <b>Telegram notifications enabled!</b>\n" +
       "You will now receive trading alerts for:\n" +
       "• Buy orders executed\n" +
       "• Position entries\n" +
       "• Position closed\n" +
-      "• All errors and exceptions",
+      "• All errors and exceptions\n\n" +
+      "Use <code>/stop</code> to unsubscribe.",
       { parse_mode: "HTML" }
     );
   });
-  
+
+  bot.command("stop", (ctx) => {
+    const id = ctx.chat.id;
+    chatIds = chatIds.filter((cid) => cid !== id);
+    saveChatIds(chatIds);
+    logger.info({ chatId: id, user: ctx.from }, "Telegram chat ID removed via /stop command");
+    ctx.reply("🔕 <b>Notifications disabled.</b> You will no longer receive alerts.", { parse_mode: "HTML" });
+  });
+
   bot.command("status", (ctx) => {
     ctx.reply(
       "📊 <b>Bot Status</b>\n" +
-      `✅ Telegram notifications ${chatId ? "enabled" : "disabled"}`,
+      `✅ Telegram notifications ${chatIds.length > 0 ? "enabled" : "disabled"}\n` +
+      `👥 Subscribers: <code>${chatIds.length}</code>`,
       { parse_mode: "HTML" }
     );
   });
@@ -67,18 +120,20 @@ if (CONFIG.TELEGRAM_BOT_TOKEN) {
 }
 
 /**
- * Send a message to Telegram
+ * Send a message to all subscribed Telegram chats.
  */
 export async function sendTelegramMessage(text: string) {
-  if (!bot || !chatId) {
-    logger.debug({ hasBot: !!bot, hasChatId: !!chatId }, "Telegram not configured or chat ID not set");
+  if (!bot || chatIds.length === 0) {
+    logger.debug({ hasBot: !!bot, chatIdsLength: chatIds.length }, "Telegram not configured or no chat IDs");
     return;
   }
 
-  try {
-    await bot.telegram.sendMessage(chatId, text, { parse_mode: "HTML" });
-  } catch (error) {
-    logger.error({ error }, "Error sending Telegram message");
+  for (const id of chatIds) {
+    try {
+      await bot.telegram.sendMessage(id, text, { parse_mode: "HTML" });
+    } catch (error) {
+      logger.error({ error, chatId: id }, "Error sending Telegram message");
+    }
   }
 }
 
@@ -95,7 +150,7 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * Send a formatted error alert to Telegram
+ * Send a formatted error alert to all subscribed Telegram chats.
  * Error messages are HTML-escaped to prevent Telegram parse errors
  */
 export async function sendTelegramError(context: string, error: any) {
@@ -105,8 +160,8 @@ export async function sendTelegramError(context: string, error: any) {
 }
 
 /**
- * Get the current chat ID (useful for testing)
+ * Get the current chat IDs (useful for testing)
  */
-export function getChatId() {
-  return chatId;
+export function getChatIds() {
+  return chatIds;
 }
