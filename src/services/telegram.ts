@@ -1,11 +1,12 @@
 import { Telegraf } from "telegraf";
 import { CONFIG } from "../config";
 import { createChildLogger } from "../utils/logger/logger";
-
-const logger = createChildLogger("Telegram");
+import { healthState } from "./health";
 
 let chatId: number | null = null;
 let bot: Telegraf | null = null;
+
+const logger = createChildLogger("Telegram");
 
 if (CONFIG.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(CONFIG.TELEGRAM_BOT_TOKEN);
@@ -29,6 +30,27 @@ if (CONFIG.TELEGRAM_BOT_TOKEN) {
     ctx.reply(
       "📊 <b>Bot Status</b>\n" +
       `✅ Telegram notifications ${chatId ? "enabled" : "disabled"}`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.command("health", (ctx) => {
+    const uptimeMs = Date.now() - healthState.startedAt;
+    const lastTickAge = Date.now() - healthState.lastTickAt;
+    const UPTIME_HOURS = Math.floor(uptimeMs / 3600000);
+    const UPTIME_MINUTES = Math.floor((uptimeMs % 3600000) / 60000);
+    const isHealthy = lastTickAge < CONFIG.CHECK_INTERVAL * 3;
+
+    ctx.reply(
+      `🏥 <b>Bot Health</b>\n` +
+      `Status: <code>${isHealthy ? "✅ OK" : "⚠️ STALE"}</code>\n` +
+      `Uptime: <code>${UPTIME_HOURS}h ${UPTIME_MINUTES}m</code>\n` +
+      `Last Tick: <code>${lastTickAge < 1000 ? `${Math.floor(lastTickAge)}ms ago` : `${Math.floor(lastTickAge / 1000)}s ago`}</code>\n` +
+      `WS (User): <code>${healthState.userWsConnected ? "✅" : "❌"}</code> | ` +
+      `OB: <code>${healthState.orderbookWsConnected ? "✅" : "❌"}</code>\n` +
+      `Open Positions: <code>${healthState.openPositions}</code>\n` +
+      `Symbols: <code>${CONFIG.SYMBOLS.join(", ")}</code>\n` +
+      `Time: <code>${new Date().toISOString()}</code>`,
       { parse_mode: "HTML" }
     );
   });

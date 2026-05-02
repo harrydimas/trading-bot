@@ -9,7 +9,7 @@ const baseExchange = new ccxt.binance({
   secret: CONFIG.SECRET,
 
   enableRateLimit: true,
-  timeout: 60000, // Increased from 30s to 60s for better reliability
+  timeout: 10000, // shorter default; individual ops can override
 
   options: {
     defaultType: "spot",
@@ -42,6 +42,26 @@ export const exchange = new Proxy(baseExchange, {
     return originalMethod;
   }
 });
+
+/**
+ * Fast price fetch with aggressive timeout.
+ * Uses the lightweight ticker/price endpoint instead of ticker/24hr.
+ * Falls back to normal fetchTicker if this fails.
+ */
+export async function fetchPrice(symbol: string, timeoutMs = 8000): Promise<number | null> {
+  try {
+    const result = await Promise.race([
+      exchange.fetchTicker(symbol),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`fetchPrice timeout after ${timeoutMs}ms`)), timeoutMs)
+      ),
+    ]);
+    return (result as any).last ?? null;
+  } catch (error) {
+    logger.warn({ symbol, error }, "fetchPrice failed");
+    return null;
+  }
+}
 
 export async function getUSDTBalance(): Promise<number> {
   const balance = await exchange.fetchBalance();

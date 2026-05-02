@@ -10,7 +10,7 @@ export function checkSlippage(symbol: string, price: number) {
     return false;
   }
 
-  const estAsk = ob.asks / 10;
+  const estAsk = ob.bestAsk || price;
   const diff = Math.abs(estAsk - price) / price;
   const threshold = 0.002;
   const passed = diff < threshold;

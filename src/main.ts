@@ -106,7 +106,13 @@ async function main() {
     
     for (const b of bots) {
       try {
-        await b.tick();
+        // Safety timeout: max 15s per bot tick, prevent stuck bot from blocking loop
+        await Promise.race([
+          b.tick(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Bot tick timeout after 15s`)), 15_000)
+          ),
+        ]);
       } catch (error) {
         logger.error({ error, symbol: b.symbol }, "Error in bot tick");
         sendTelegramError(`MAIN LOOP [${b.symbol}]`, error);
