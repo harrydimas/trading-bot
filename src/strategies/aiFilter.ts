@@ -25,6 +25,17 @@ const currentTickPrice: Record<string, number> = {};
 const lastTelegramSent: Record<string, number> = {};
 const lastDecision: Record<string, boolean> = {};
 
+// Export for testing
+export const _test = {
+  snap15m,
+  snap1h,
+  last15mInterval,
+  last1hInterval,
+  currentTickPrice,
+  lastTelegramSent,
+  lastDecision,
+};
+
 /**
  * Inisialisasi cache harga menggunakan data historis (Klines)
  * Mencegah bot "buta" di jam pertama setelah restart.
@@ -129,12 +140,7 @@ export function shouldEnter(symbol: string, price: number): boolean {
   const above1h = price > s1h.price;    // konfirmasi tren 1 jam
   const obStrong = ratio > 1.2;         // orderbook masih condong bids
 
-  // Volatility filter — avoid entry in flat/sideways market
-  const change15m = Math.abs(price - s15m.price) / s15m.price;
-  const change1h  = Math.abs(price - s1h.price) / s1h.price;
-  const hasVolatility = change15m > 0.002 && change1h > 0.001; // 0.2% and 0.1%
-
-  const enter = above15m && above1h && obStrong && hasVolatility;
+  const enter = above15m && above1h && obStrong;
 
   logger.info({
     symbol, price,
@@ -143,9 +149,6 @@ export function shouldEnter(symbol: string, price: number): boolean {
     above15m, above1h,
     ratio: ratio.toFixed(2),
     obStrong,
-    change15m: change15m.toFixed(4),
-    change1h: change1h.toFixed(4),
-    hasVolatility,
     enter,
   }, "Entry condition check");
 
@@ -162,8 +165,7 @@ export function shouldEnter(symbol: string, price: number): boolean {
       `Price: <code>${price}</code> | Ratio: <code>${ratio.toFixed(2)}</code>\n` +
       `15m:  <code>${above15m ? "✅" : "❌"}</code> price > prev <code>${s15m.price}</code> (int: ${s15m.interval})\n` +
       `1h:   <code>${above1h ? "✅" : "❌"}</code> price > prev <code>${s1h.price}</code> (int: ${s1h.interval})\n` +
-      `OB:   <code>${obStrong ? "✅" : "❌"}</code> ratio <code>${ratio.toFixed(2)}</code> > 1.2\n` +
-      `Vol:  <code>${hasVolatility ? "✅" : "❌"}</code> 15m: ${(change15m * 100).toFixed(2)}% 1h: ${(change1h * 100).toFixed(2)}%`
+      `OB:   <code>${obStrong ? "✅" : "❌"}</code> ratio <code>${ratio.toFixed(2)}</code> > 1.2`
     );
     lastTelegramSent[symbol] = now;
     lastDecision[symbol] = enter;
